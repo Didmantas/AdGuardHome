@@ -51,6 +51,47 @@ func newClientsContainer(t *testing.T) (c *clientsContainer) {
 	return c
 }
 
+// addHost adds a new IP-hostname pairing.
+func (clients *clientsContainer) addHost(
+	ip netip.Addr,
+	host string,
+	src client.Source,
+) (ok bool) {
+	rc := client.NewRuntime(ip)
+	rc.SetInfo(src, []string{host})
+	clients.storage.UpdateRuntime(rc)
+
+	return true
+}
+
+// setWHOISInfo sets the WHOIS information for a client.
+func (clients *clientsContainer) setWHOISInfo(ip netip.Addr, wi *whois.Info) {
+	_, ok := clients.storage.Find(ip.String())
+	if ok {
+		return
+	}
+
+	rc := client.NewRuntime(ip)
+	rc.SetWHOIS(wi)
+	clients.storage.UpdateRuntime(rc)
+}
+
+// clientSource checks if client with this IP address already exists and returns
+// the highest priority client source.
+func (clients *clientsContainer) clientSource(ip netip.Addr) (src client.Source) {
+	_, ok := clients.storage.Find(ip.String())
+	if ok {
+		return client.SourcePersistent
+	}
+
+	rc := clients.storage.ClientRuntime(ip)
+	if rc != nil {
+		src, _ = rc.Info()
+	}
+
+	return src
+}
+
 func TestClients(t *testing.T) {
 	clients := newClientsContainer(t)
 
@@ -84,22 +125,22 @@ func TestClients(t *testing.T) {
 		err = clients.storage.Add(c)
 		require.NoError(t, err)
 
-		c, ok := clients.find(cli1)
+		c, ok := clients.storage.Find(cli1)
 		require.True(t, ok)
 
 		assert.Equal(t, "client1", c.Name)
 
-		c, ok = clients.find("1:2:3::4")
+		c, ok = clients.storage.Find("1:2:3::4")
 		require.True(t, ok)
 
 		assert.Equal(t, "client1", c.Name)
 
-		c, ok = clients.find(cli2)
+		c, ok = clients.storage.Find(cli2)
 		require.True(t, ok)
 
 		assert.Equal(t, "client2", c.Name)
 
-		_, ok = clients.find(cliNone)
+		_, ok = clients.storage.Find(cliNone)
 		assert.False(t, ok)
 
 		assert.Equal(t, clients.clientSource(cli1IP), client.SourcePersistent)
@@ -150,7 +191,7 @@ func TestClients(t *testing.T) {
 		})
 		require.NoError(t, err)
 
-		_, ok = clients.find(cliOld)
+		_, ok = clients.storage.Find(cliOld)
 		assert.False(t, ok)
 
 		assert.Equal(t, clients.clientSource(cliNewIP), client.SourcePersistent)
@@ -167,7 +208,7 @@ func TestClients(t *testing.T) {
 		})
 		require.NoError(t, err)
 
-		c, ok := clients.find(cliNew)
+		c, ok := clients.storage.Find(cliNew)
 		require.True(t, ok)
 
 		assert.Equal(t, "client1-renamed", c.Name)
@@ -187,7 +228,7 @@ func TestClients(t *testing.T) {
 		ok := clients.storage.RemoveByName("client1-renamed")
 		require.True(t, ok)
 
-		_, ok = clients.find("1.1.1.2")
+		_, ok = clients.storage.Find("1.1.1.2")
 		assert.False(t, ok)
 	})
 
@@ -277,13 +318,33 @@ func TestClientsWHOIS(t *testing.T) {
 }
 
 func TestClientsAddExisting(t *testing.T) {
-	clients := newClientsContainer(t)
+	clients := &clientsContainer{
+		testing: true,
+	}
+
+	// First, init a DHCP server with a single static lease.
+	config := &dhcpd.ServerConfig{
+		Enabled: true,
+		DataDir: t.TempDir(),
+		Conf4: dhcpd.V4ServerConf{
+			Enabled:    true,
+			GatewayIP:  netip.MustParseAddr("1.2.3.1"),
+			SubnetMask: netip.MustParseAddr("255.255.255.0"),
+			RangeStart: netip.MustParseAddr("1.2.3.2"),
+			RangeEnd:   netip.MustParseAddr("1.2.3.10"),
+		},
+	}
+
+	dhcpServer, err := dhcpd.Create(config)
+	require.NoError(t, err)
+
+	require.NoError(t, clients.Init(nil, dhcpServer, nil, nil, &filtering.Config{}))
 
 	t.Run("simple", func(t *testing.T) {
 		ip := netip.MustParseAddr("1.1.1.1")
 
 		// Add a client.
-		err := clients.storage.Add(&client.Persistent{
+		err = clients.storage.Add(&client.Persistent{
 			Name:    "client1",
 			UID:     client.MustNewUID(),
 			IPs:     []netip.Addr{ip, netip.MustParseAddr("1:2:3::4")},
@@ -305,24 +366,6 @@ func TestClientsAddExisting(t *testing.T) {
 		}
 
 		ip := netip.MustParseAddr("1.2.3.4")
-
-		// First, init a DHCP server with a single static lease.
-		config := &dhcpd.ServerConfig{
-			Enabled: true,
-			DataDir: t.TempDir(),
-			Conf4: dhcpd.V4ServerConf{
-				Enabled:    true,
-				GatewayIP:  netip.MustParseAddr("1.2.3.1"),
-				SubnetMask: netip.MustParseAddr("255.255.255.0"),
-				RangeStart: netip.MustParseAddr("1.2.3.2"),
-				RangeEnd:   netip.MustParseAddr("1.2.3.10"),
-			},
-		}
-
-		dhcpServer, err := dhcpd.Create(config)
-		require.NoError(t, err)
-
-		clients.dhcp = dhcpServer
 
 		err = dhcpServer.AddStaticLease(&dhcpsvc.Lease{
 			HWAddr:   net.HardwareAddr{0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA},

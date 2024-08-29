@@ -1,23 +1,62 @@
 package client
 
 import (
+	"cmp"
 	"fmt"
 	"net"
 	"net/netip"
 	"slices"
 	"sync"
+	"time"
 
+	"github.com/AdguardTeam/AdGuardHome/internal/aghnet"
+	"github.com/AdguardTeam/AdGuardHome/internal/arpdb"
+	"github.com/AdguardTeam/AdGuardHome/internal/dhcpsvc"
+	"github.com/AdguardTeam/AdGuardHome/internal/whois"
 	"github.com/AdguardTeam/golibs/container"
 	"github.com/AdguardTeam/golibs/errors"
+	"github.com/AdguardTeam/golibs/hostsfile"
 	"github.com/AdguardTeam/golibs/log"
 )
 
+// DHCP is an interface for accessing DHCP lease data the [Storage] needs.
+type DHCP interface {
+	// Leases returns all the DHCP leases.
+	Leases() (leases []*dhcpsvc.Lease)
+
+	// HostByIP returns the hostname of the DHCP client with the given IP
+	// address.  The address will be netip.Addr{} if there is no such client,
+	// due to an assumption that a DHCP client must always have a hostname.
+	HostByIP(ip netip.Addr) (host string)
+
+	// MACByIP returns the MAC address for the given IP address leased.  It
+	// returns nil if there is no such client, due to an assumption that a DHCP
+	// client must always have a MAC address.
+	MACByIP(ip netip.Addr) (mac net.HardwareAddr)
+}
+
+type emptyDHCP struct{}
+
+// type check
+var _ DHCP = emptyDHCP{}
+
+func (emptyDHCP) Leases() (_ []*dhcpsvc.Lease) { return nil }
+
+func (emptyDHCP) HostByIP(_ netip.Addr) (_ string) { return "" }
+
+func (emptyDHCP) MACByIP(_ netip.Addr) (_ net.HardwareAddr) { return nil }
+
 // Config is the client storage configuration structure.
-//
-// TODO(s.chzhen):  Expand.
 type Config struct {
+	DHCP     DHCP
+	EtcHosts *aghnet.HostsContainer
+	ARPDB    arpdb.Interface
+
 	// AllowedTags is a list of all allowed client tags.
 	AllowedTags []string
+
+	InitialClients         []*Persistent
+	ARPClientsUpdatePeriod time.Duration
 }
 
 // Storage contains information about persistent and runtime clients.
@@ -33,18 +72,156 @@ type Storage struct {
 
 	// runtimeIndex contains information about runtime clients.
 	runtimeIndex *RuntimeIndex
+
+	dhcp                   DHCP
+	etcHosts               *aghnet.HostsContainer
+	arpDB                  arpdb.Interface
+	arpClientsUpdatePeriod time.Duration
 }
 
 // NewStorage returns initialized client storage.  conf must not be nil.
-func NewStorage(conf *Config) (s *Storage) {
+func NewStorage(conf *Config) (s *Storage, err error) {
 	allowedTags := container.NewMapSet(conf.AllowedTags...)
-
-	return &Storage{
-		allowedTags:  allowedTags,
-		mu:           &sync.Mutex{},
-		index:        newIndex(),
-		runtimeIndex: NewRuntimeIndex(),
+	s = &Storage{
+		allowedTags:            allowedTags,
+		mu:                     &sync.Mutex{},
+		index:                  newIndex(),
+		runtimeIndex:           NewRuntimeIndex(),
+		dhcp:                   cmp.Or(conf.DHCP, DHCP(emptyDHCP{})),
+		etcHosts:               conf.EtcHosts,
+		arpDB:                  conf.ARPDB,
+		arpClientsUpdatePeriod: conf.ARPClientsUpdatePeriod,
 	}
+
+	for i, p := range conf.InitialClients {
+		err = s.Add(p)
+		if err != nil {
+			return nil, fmt.Errorf("adding client %q at index %d: %w", p.Name, i, err)
+		}
+	}
+
+	return s, nil
+}
+
+// Start starts the goroutines for updating the runtime client information.
+func (s *Storage) Start() {
+	go s.periodicARPUpdate()
+	go s.handleHostsUpdates()
+}
+
+// periodicARPUpdate periodically reloads runtime clients from ARP.  It is
+// intended to be used as a goroutine.
+func (s *Storage) periodicARPUpdate() {
+	defer log.OnPanic("storage")
+
+	for {
+		s.ReloadARP()
+		time.Sleep(s.arpClientsUpdatePeriod)
+	}
+}
+
+// ReloadARP reloads runtime clients from ARP, if configured.
+func (s *Storage) ReloadARP() {
+	if s.arpDB != nil {
+		s.addFromSystemARP()
+	}
+}
+
+// addFromSystemARP adds the IP-hostname pairings from the output of the arp -a
+// command.
+func (s *Storage) addFromSystemARP() {
+	if err := s.arpDB.Refresh(); err != nil {
+		s.arpDB = arpdb.Empty{}
+		log.Error("refreshing arp container: %s", err)
+
+		return
+	}
+
+	ns := s.arpDB.Neighbors()
+	if len(ns) == 0 {
+		log.Debug("refreshing arp container: the update is empty")
+
+		return
+	}
+
+	var rcs []*Runtime
+	for _, n := range ns {
+		rc := NewRuntime(n.IP)
+		rc.SetInfo(SourceARP, []string{n.Name})
+
+		rcs = append(rcs, rc)
+	}
+
+	added, removed := s.BatchUpdateBySource(SourceARP, rcs)
+	log.Debug("storage: added %d, removed %d client aliases from arp neighborhood", added, removed)
+}
+
+// handleHostsUpdates receives the updates from the hosts container and adds
+// them to the clients storage.  It is intended to be used as a goroutine.
+func (s *Storage) handleHostsUpdates() {
+	defer log.OnPanic("storage")
+
+	for upd := range s.etcHosts.Upd() {
+		s.addFromHostsFile(upd)
+	}
+}
+
+// addFromHostsFile fills the client-hostname pairing index from the system's
+// hosts files.
+func (s *Storage) addFromHostsFile(hosts *hostsfile.DefaultStorage) {
+	var rcs []*Runtime
+	hosts.RangeNames(func(addr netip.Addr, names []string) (cont bool) {
+		// Only the first name of the first record is considered a canonical
+		// hostname for the IP address.
+		//
+		// TODO(e.burkov):  Consider using all the names from all the records.
+		rc := NewRuntime(addr)
+		rc.SetInfo(SourceHostsFile, []string{names[0]})
+
+		rcs = append(rcs, rc)
+
+		return true
+	})
+
+	added, removed := s.BatchUpdateBySource(SourceHostsFile, rcs)
+	log.Debug("storage: added %d, removed %d client aliases from system hosts file", added, removed)
+}
+
+// type check
+var _ AddressUpdater = (*Storage)(nil)
+
+// UpdateAddress implements the [AddressUpdater] interface for *Storage
+func (s *Storage) UpdateAddress(ip netip.Addr, host string, info *whois.Info) {
+	// Common fast path optimization.
+	if host == "" && info == nil {
+		return
+	}
+
+	if host != "" {
+		rc := NewRuntime(ip)
+		rc.SetInfo(SourceRDNS, []string{host})
+		s.UpdateRuntime(rc)
+	}
+
+	if info != nil {
+		s.setWHOISInfo(ip, info)
+	}
+}
+
+// setWHOISInfo sets the WHOIS information for a runtime client.
+func (s *Storage) setWHOISInfo(ip netip.Addr, wi *whois.Info) {
+	_, ok := s.Find(ip.String())
+	if ok {
+		log.Debug("storage: client for %s is already created, ignore whois info", ip)
+
+		return
+	}
+
+	rc := NewRuntime(ip)
+	rc.SetWHOIS(wi)
+	s.UpdateRuntime(rc)
+
+	log.Debug("storage: set whois info for runtime client with ip %s: %+v", ip, wi)
 }
 
 // Add stores persistent client information or returns an error.
@@ -103,6 +280,16 @@ func (s *Storage) Find(id string) (p *Persistent, ok bool) {
 		return p.ShallowClone(), ok
 	}
 
+	ip, err := netip.ParseAddr(id)
+	if err != nil {
+		return nil, false
+	}
+
+	foundMAC := s.dhcp.MACByIP(ip)
+	if foundMAC != nil {
+		return s.FindByMAC(foundMAC)
+	}
+
 	return nil, false
 }
 
@@ -130,11 +317,9 @@ func (s *Storage) FindLoose(ip netip.Addr, id string) (p *Persistent, ok bool) {
 	return nil, false
 }
 
-// FindByMAC finds persistent client by MAC and returns its shallow copy.
+// FindByMAC finds persistent client by MAC and returns its shallow copy.  s.mu
+// is expected to be locked.
 func (s *Storage) FindByMAC(mac net.HardwareAddr) (p *Persistent, ok bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	p, ok = s.index.findByMAC(mac)
 	if ok {
 		return p.ShallowClone(), ok
@@ -226,13 +411,25 @@ func (s *Storage) CloseUpstreams() (err error) {
 
 // ClientRuntime returns a copy of the saved runtime client by ip.  If no such
 // client exists, returns nil.
-//
-// TODO(s.chzhen):  Use it.
 func (s *Storage) ClientRuntime(ip netip.Addr) (rc *Runtime) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	return s.runtimeIndex.Client(ip)
+	rc = s.runtimeIndex.Client(ip)
+	if rc != nil {
+		return rc
+	}
+
+	host := s.dhcp.HostByIP(ip)
+	if host == "" {
+		return nil
+	}
+
+	rc = NewRuntime(ip)
+	rc.SetInfo(SourceDHCP, []string{host})
+	s.UpdateRuntime(rc)
+
+	return rc
 }
 
 // UpdateRuntime updates the stored runtime client with information from rc.  If

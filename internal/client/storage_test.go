@@ -17,9 +17,10 @@ import (
 func newStorage(tb testing.TB, m []*client.Persistent) (s *client.Storage) {
 	tb.Helper()
 
-	s = client.NewStorage(&client.Config{
+	s, err := client.NewStorage(&client.Config{
 		AllowedTags: nil,
 	})
+	require.NoError(tb, err)
 
 	for _, c := range m {
 		c.UID = client.MustNewUID()
@@ -73,10 +74,12 @@ func TestStorage_Add(t *testing.T) {
 		UID:       existingClientUID,
 	}
 
-	s := client.NewStorage(&client.Config{
+	s, err := client.NewStorage(&client.Config{
 		AllowedTags: []string{allowedTag},
 	})
-	err := s.Add(existingClient)
+	require.NoError(t, err)
+
+	err = s.Add(existingClient)
 	require.NoError(t, err)
 
 	testCases := []struct {
@@ -164,10 +167,12 @@ func TestStorage_RemoveByName(t *testing.T) {
 		UID:  client.MustNewUID(),
 	}
 
-	s := client.NewStorage(&client.Config{
+	s, err := client.NewStorage(&client.Config{
 		AllowedTags: nil,
 	})
-	err := s.Add(existingClient)
+	require.NoError(t, err)
+
+	err = s.Add(existingClient)
 	require.NoError(t, err)
 
 	testCases := []struct {
@@ -191,9 +196,11 @@ func TestStorage_RemoveByName(t *testing.T) {
 	}
 
 	t.Run("duplicate_remove", func(t *testing.T) {
-		s = client.NewStorage(&client.Config{
+		s, err = client.NewStorage(&client.Config{
 			AllowedTags: nil,
 		})
+		require.NoError(t, err)
+
 		err = s.Add(existingClient)
 		require.NoError(t, err)
 
@@ -651,9 +658,10 @@ func TestStorage_UpdateRuntime(t *testing.T) {
 	}
 	updated.SetWHOIS(info)
 
-	s := client.NewStorage(&client.Config{
+	s, err := client.NewStorage(&client.Config{
 		AllowedTags: nil,
 	})
+	require.NoError(t, err)
 
 	t.Run("add_arp_client", func(t *testing.T) {
 		added := client.NewRuntime(ip)
@@ -739,9 +747,10 @@ func TestStorage_BatchUpdateBySource(t *testing.T) {
 		newRuntimeClient(cliUpdatedIP5, defSrc, cliUpdatedHost5),
 	}
 
-	s := client.NewStorage(&client.Config{
+	s, err := client.NewStorage(&client.Config{
 		AllowedTags: nil,
 	})
+	require.NoError(t, err)
 
 	t.Run("populate_storage_with_first_clients", func(t *testing.T) {
 		added, removed := s.BatchUpdateBySource(defSrc, firstClients)

@@ -117,6 +117,7 @@ func (clients *clientsContainer) handleGetClients(w http.ResponseWriter, r *http
 		return true
 	})
 
+	// TODO(s.chzhen):  Remove.
 	for _, l := range clients.dhcp.Leases() {
 		cj := runtimeClientJSON{
 			Name:   l.Hostname,
@@ -430,7 +431,7 @@ func (clients *clientsContainer) handleFindClient(w http.ResponseWriter, r *http
 		}
 
 		ip, _ := netip.ParseAddr(idStr)
-		c, ok := clients.find(idStr)
+		c, ok := clients.storage.Find(idStr)
 		var cj *clientJSON
 		if !ok {
 			cj = clients.findRuntime(ip, idStr)
@@ -452,7 +453,7 @@ func (clients *clientsContainer) handleFindClient(w http.ResponseWriter, r *http
 // /etc/hosts tables, DHCP leases, or blocklists.  cj is guaranteed to be
 // non-nil.
 func (clients *clientsContainer) findRuntime(ip netip.Addr, idStr string) (cj *clientJSON) {
-	rc := clients.findRuntimeClient(ip)
+	rc := clients.storage.ClientRuntime(ip)
 	if rc == nil {
 		// It is still possible that the IP used to be in the runtime clients
 		// list, but then the server was reloaded.  So, check the DNS server's
