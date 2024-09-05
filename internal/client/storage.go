@@ -9,7 +9,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/AdguardTeam/AdGuardHome/internal/aghnet"
 	"github.com/AdguardTeam/AdGuardHome/internal/arpdb"
 	"github.com/AdguardTeam/AdGuardHome/internal/dhcpsvc"
 	"github.com/AdguardTeam/AdGuardHome/internal/whois"
@@ -46,10 +45,14 @@ func (emptyDHCP) HostByIP(_ netip.Addr) (_ string) { return "" }
 
 func (emptyDHCP) MACByIP(_ netip.Addr) (_ net.HardwareAddr) { return nil }
 
+type HostsContainer interface {
+	Upd() (updates <-chan *hostsfile.DefaultStorage)
+}
+
 // Config is the client storage configuration structure.
 type Config struct {
 	DHCP     DHCP
-	EtcHosts *aghnet.HostsContainer
+	EtcHosts HostsContainer
 	ARPDB    arpdb.Interface
 
 	// AllowedTags is a list of all allowed client tags.
@@ -74,7 +77,7 @@ type Storage struct {
 	runtimeIndex *RuntimeIndex
 
 	dhcp                   DHCP
-	etcHosts               *aghnet.HostsContainer
+	etcHosts               HostsContainer
 	arpDB                  arpdb.Interface
 	arpClientsUpdatePeriod time.Duration
 }
@@ -159,6 +162,10 @@ func (s *Storage) addFromSystemARP() {
 // handleHostsUpdates receives the updates from the hosts container and adds
 // them to the clients storage.  It is intended to be used as a goroutine.
 func (s *Storage) handleHostsUpdates() {
+	if s.etcHosts == nil {
+		return
+	}
+
 	defer log.OnPanic("storage")
 
 	for upd := range s.etcHosts.Upd() {
@@ -425,9 +432,9 @@ func (s *Storage) ClientRuntime(ip netip.Addr) (rc *Runtime) {
 		return nil
 	}
 
+	// TODO(s.chzhen):  Update runtime index.
 	rc = NewRuntime(ip)
 	rc.SetInfo(SourceDHCP, []string{host})
-	s.UpdateRuntime(rc)
 
 	return rc
 }
