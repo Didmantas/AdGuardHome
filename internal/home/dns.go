@@ -1,6 +1,7 @@
 package home
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"net"
@@ -457,9 +458,12 @@ func startDNSServer() error {
 
 	Context.filters.EnableFilters(false)
 
-	Context.clients.Start()
+	err := Context.clients.Start(context.TODO())
+	if err != nil {
+		return fmt.Errorf("couldn't start clients container: %w", err)
+	}
 
-	err := Context.dnsServer.Start()
+	err = Context.dnsServer.Start()
 	if err != nil {
 		return fmt.Errorf("couldn't start forwarding DNS server: %w", err)
 	}

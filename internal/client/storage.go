@@ -2,10 +2,10 @@ package client
 
 import (
 	"cmp"
+	"context"
 	"fmt"
 	"net"
 	"net/netip"
-	"slices"
 	"sync"
 	"time"
 
@@ -24,8 +24,8 @@ type DHCP interface {
 	Leases() (leases []*dhcpsvc.Lease)
 
 	// HostByIP returns the hostname of the DHCP client with the given IP
-	// address.  The address will be netip.Addr{} if there is no such client,
-	// due to an assumption that a DHCP client must always have a hostname.
+	// address.  host will be empty if there is no such client, due to an
+	// assumption that a DHCP client must always have a hostname.
 	HostByIP(ip netip.Addr) (host string)
 
 	// MACByIP returns the MAC address for the given IP address leased.  It
@@ -34,31 +34,47 @@ type DHCP interface {
 	MACByIP(ip netip.Addr) (mac net.HardwareAddr)
 }
 
+// emptyDHCP is the empty [DHCP] implementation that does nothing.
 type emptyDHCP struct{}
 
 // type check
 var _ DHCP = emptyDHCP{}
 
-func (emptyDHCP) Leases() (_ []*dhcpsvc.Lease) { return nil }
+// Leases implements the [DHCP] interface for emptyDHCP.
+func (emptyDHCP) Leases() (leases []*dhcpsvc.Lease) { return nil }
 
-func (emptyDHCP) HostByIP(_ netip.Addr) (_ string) { return "" }
+// HostByIP implements the [DHCP] interface for emptyDHCP.
+func (emptyDHCP) HostByIP(_ netip.Addr) (host string) { return "" }
 
-func (emptyDHCP) MACByIP(_ netip.Addr) (_ net.HardwareAddr) { return nil }
+// MACByIP implements the [DHCP] interface for emptyDHCP.
+func (emptyDHCP) MACByIP(_ netip.Addr) (mac net.HardwareAddr) { return nil }
 
+// HostsContainer is an interface for receiving updates to the system hosts
+// file.
 type HostsContainer interface {
 	Upd() (updates <-chan *hostsfile.DefaultStorage)
 }
 
 // Config is the client storage configuration structure.
 type Config struct {
-	DHCP     DHCP
+	// DHCP is used to update [SourceDHCP] runtime client information.
+	DHCP DHCP
+
+	// EtcHosts is used to update [SourceHostsFile] runtime client information.
 	EtcHosts HostsContainer
-	ARPDB    arpdb.Interface
+
+	// ARPDB is used to update [SourceARP] runtime client information.
+	ARPDB arpdb.Interface
 
 	// AllowedTags is a list of all allowed client tags.
 	AllowedTags []string
 
-	InitialClients         []*Persistent
+	// InitialClients is a list of persistent clients parsed from the
+	// configuration file.  Each client must not be nil.
+	InitialClients []*Persistent
+
+	// ARPClientsUpdatePeriod defines how often [SourceARP] runtime client
+	// information is updated.
 	ARPClientsUpdatePeriod time.Duration
 }
 
@@ -74,11 +90,22 @@ type Storage struct {
 	index *index
 
 	// runtimeIndex contains information about runtime clients.
-	runtimeIndex *RuntimeIndex
+	runtimeIndex *runtimeIndex
 
-	dhcp                   DHCP
-	etcHosts               HostsContainer
-	arpDB                  arpdb.Interface
+	// dhcp is used to update [SourceDHCP] runtime client information.
+	dhcp DHCP
+
+	// etcHosts is used to update [SourceHostsFile] runtime client information.
+	etcHosts HostsContainer
+
+	// arpDB is used to update [SourceARP] runtime client information.
+	arpDB arpdb.Interface
+
+	// done is the shutdown signaling channel.
+	done chan struct{}
+
+	// arpClientsUpdatePeriod defines how often [SourceARP] runtime client
+	// information is updated.  It must be greater than zero.
 	arpClientsUpdatePeriod time.Duration
 }
 
@@ -89,11 +116,12 @@ func NewStorage(conf *Config) (s *Storage, err error) {
 		allowedTags:            allowedTags,
 		mu:                     &sync.Mutex{},
 		index:                  newIndex(),
-		runtimeIndex:           NewRuntimeIndex(),
+		runtimeIndex:           newRuntimeIndex(),
 		dhcp:                   cmp.Or(conf.DHCP, DHCP(emptyDHCP{})),
 		etcHosts:               conf.EtcHosts,
 		arpDB:                  conf.ARPDB,
 		arpClientsUpdatePeriod: conf.ARPClientsUpdatePeriod,
+		done:                   make(chan struct{}),
 	}
 
 	for i, p := range conf.InitialClients {
@@ -107,9 +135,18 @@ func NewStorage(conf *Config) (s *Storage, err error) {
 }
 
 // Start starts the goroutines for updating the runtime client information.
-func (s *Storage) Start() {
+func (s *Storage) Start(_ context.Context) (err error) {
 	go s.periodicARPUpdate()
 	go s.handleHostsUpdates()
+
+	return nil
+}
+
+// Shutdown gracefully stops the client storage.
+func (s *Storage) Shutdown(_ context.Context) (err error) {
+	close(s.done)
+
+	return nil
 }
 
 // periodicARPUpdate periodically reloads runtime clients from ARP.  It is
@@ -117,9 +154,15 @@ func (s *Storage) Start() {
 func (s *Storage) periodicARPUpdate() {
 	defer log.OnPanic("storage")
 
+	t := time.NewTicker(s.arpClientsUpdatePeriod)
+
 	for {
-		s.ReloadARP()
-		time.Sleep(s.arpClientsUpdatePeriod)
+		select {
+		case <-t.C:
+			s.ReloadARP()
+		case <-s.done:
+			return
+		}
 	}
 }
 
@@ -133,6 +176,9 @@ func (s *Storage) ReloadARP() {
 // addFromSystemARP adds the IP-hostname pairings from the output of the arp -a
 // command.
 func (s *Storage) addFromSystemARP() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	if err := s.arpDB.Refresh(); err != nil {
 		s.arpDB = arpdb.Empty{}
 		log.Error("refreshing arp container: %s", err)
@@ -147,16 +193,16 @@ func (s *Storage) addFromSystemARP() {
 		return
 	}
 
-	var rcs []*Runtime
-	for _, n := range ns {
-		rc := NewRuntime(n.IP)
-		rc.SetInfo(SourceARP, []string{n.Name})
+	src := SourceARP
+	s.runtimeIndex.clearSource(src)
 
-		rcs = append(rcs, rc)
+	for _, n := range ns {
+		s.runtimeIndex.setInfo(n.IP, src, []string{n.Name})
 	}
 
-	added, removed := s.BatchUpdateBySource(SourceARP, rcs)
-	log.Debug("storage: added %d, removed %d client aliases from arp neighborhood", added, removed)
+	removed := s.runtimeIndex.removeEmpty()
+
+	log.Debug("storage: added %d, removed %d client aliases from arp neighborhood", len(ns), removed)
 }
 
 // handleHostsUpdates receives the updates from the hosts container and adds
@@ -168,29 +214,38 @@ func (s *Storage) handleHostsUpdates() {
 
 	defer log.OnPanic("storage")
 
-	for upd := range s.etcHosts.Upd() {
-		s.addFromHostsFile(upd)
+	for {
+		select {
+		case upd := <-s.etcHosts.Upd():
+			s.addFromHostsFile(upd)
+		case <-s.done:
+			return
+		}
 	}
 }
 
 // addFromHostsFile fills the client-hostname pairing index from the system's
 // hosts files.
 func (s *Storage) addFromHostsFile(hosts *hostsfile.DefaultStorage) {
-	var rcs []*Runtime
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	src := SourceHostsFile
+	s.runtimeIndex.clearSource(src)
+
+	added := 0
 	hosts.RangeNames(func(addr netip.Addr, names []string) (cont bool) {
 		// Only the first name of the first record is considered a canonical
 		// hostname for the IP address.
 		//
 		// TODO(e.burkov):  Consider using all the names from all the records.
-		rc := NewRuntime(addr)
-		rc.SetInfo(SourceHostsFile, []string{names[0]})
-
-		rcs = append(rcs, rc)
+		s.runtimeIndex.setInfo(addr, src, []string{names[0]})
+		added++
 
 		return true
 	})
 
-	added, removed := s.BatchUpdateBySource(SourceHostsFile, rcs)
+	removed := s.runtimeIndex.removeEmpty()
 	log.Debug("storage: added %d, removed %d client aliases from system hosts file", added, removed)
 }
 
@@ -204,10 +259,11 @@ func (s *Storage) UpdateAddress(ip netip.Addr, host string, info *whois.Info) {
 		return
 	}
 
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	if host != "" {
-		rc := NewRuntime(ip)
-		rc.SetInfo(SourceRDNS, []string{host})
-		s.UpdateRuntime(rc)
+		s.runtimeIndex.setInfo(ip, SourceRDNS, []string{host})
 	}
 
 	if info != nil {
@@ -215,18 +271,44 @@ func (s *Storage) UpdateAddress(ip netip.Addr, host string, info *whois.Info) {
 	}
 }
 
+// UpdateDHCP updates [SourceDHCP] runtime client information.
+func (s *Storage) UpdateDHCP() {
+	if s.dhcp == nil {
+		return
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	src := SourceDHCP
+	s.runtimeIndex.clearSource(src)
+
+	added := 0
+	for _, l := range s.dhcp.Leases() {
+		s.runtimeIndex.setInfo(l.IP, src, []string{l.Hostname})
+		added++
+	}
+
+	removed := s.runtimeIndex.removeEmpty()
+	log.Debug("storage: added %d, removed %d client aliases from dhcp", added, removed)
+}
+
 // setWHOISInfo sets the WHOIS information for a runtime client.
 func (s *Storage) setWHOISInfo(ip netip.Addr, wi *whois.Info) {
-	_, ok := s.Find(ip.String())
+	_, ok := s.index.findByIP(ip)
 	if ok {
 		log.Debug("storage: client for %s is already created, ignore whois info", ip)
 
 		return
 	}
 
-	rc := NewRuntime(ip)
-	rc.SetWHOIS(wi)
-	s.UpdateRuntime(rc)
+	rc := s.runtimeIndex.client(ip)
+	if rc == nil {
+		rc = NewRuntime(ip)
+		s.runtimeIndex.add(rc)
+	}
+
+	rc.setWHOIS(wi)
 
 	log.Debug("storage: set whois info for runtime client with ip %s: %+v", ip, wi)
 }
@@ -422,9 +504,9 @@ func (s *Storage) ClientRuntime(ip netip.Addr) (rc *Runtime) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	rc = s.runtimeIndex.Client(ip)
+	rc = s.runtimeIndex.client(ip)
 	if rc != nil {
-		return rc
+		return rc.clone()
 	}
 
 	host := s.dhcp.HostByIP(ip)
@@ -432,87 +514,9 @@ func (s *Storage) ClientRuntime(ip netip.Addr) (rc *Runtime) {
 		return nil
 	}
 
-	// TODO(s.chzhen):  Update runtime index.
-	rc = NewRuntime(ip)
-	rc.SetInfo(SourceDHCP, []string{host})
+	rc = s.runtimeIndex.setInfo(ip, SourceDHCP, []string{host})
 
-	return rc
-}
-
-// UpdateRuntime updates the stored runtime client with information from rc.  If
-// no such client exists, saves the copy of rc in storage.  rc must not be nil.
-func (s *Storage) UpdateRuntime(rc *Runtime) (added bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	return s.updateRuntimeLocked(rc)
-}
-
-// updateRuntimeLocked updates the stored runtime client with information from
-// rc.  rc must not be nil.  Storage.mu is expected to be locked.
-func (s *Storage) updateRuntimeLocked(rc *Runtime) (added bool) {
-	stored := s.runtimeIndex.Client(rc.ip)
-	if stored == nil {
-		s.runtimeIndex.Add(rc.Clone())
-
-		return true
-	}
-
-	if rc.whois != nil {
-		stored.whois = rc.whois.Clone()
-	}
-
-	if rc.arp != nil {
-		stored.arp = slices.Clone(rc.arp)
-	}
-
-	if rc.rdns != nil {
-		stored.rdns = slices.Clone(rc.rdns)
-	}
-
-	if rc.dhcp != nil {
-		stored.dhcp = slices.Clone(rc.dhcp)
-	}
-
-	if rc.hostsFile != nil {
-		stored.hostsFile = slices.Clone(rc.hostsFile)
-	}
-
-	return false
-}
-
-// BatchUpdateBySource updates the stored runtime clients information from the
-// specified source and returns the number of added and removed clients.
-func (s *Storage) BatchUpdateBySource(src Source, rcs []*Runtime) (added, removed int) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	for _, rc := range s.runtimeIndex.index {
-		rc.unset(src)
-	}
-
-	for _, rc := range rcs {
-		if s.updateRuntimeLocked(rc) {
-			added++
-		}
-	}
-
-	for ip, rc := range s.runtimeIndex.index {
-		if rc.isEmpty() {
-			delete(s.runtimeIndex.index, ip)
-			removed++
-		}
-	}
-
-	return added, removed
-}
-
-// SizeRuntime returns the number of the runtime clients.
-func (s *Storage) SizeRuntime() (n int) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	return s.runtimeIndex.Size()
+	return rc.clone()
 }
 
 // RangeRuntime calls f for each runtime client in an undefined order.
@@ -520,16 +524,5 @@ func (s *Storage) RangeRuntime(f func(rc *Runtime) (cont bool)) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	s.runtimeIndex.Range(f)
-}
-
-// DeleteBySource removes all runtime clients that have information only from
-// the specified source and returns the number of removed clients.
-//
-// TODO(s.chzhen):  Use it.
-func (s *Storage) DeleteBySource(src Source) (n int) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	return s.runtimeIndex.DeleteBySource(src)
+	s.runtimeIndex.rangeF(f)
 }

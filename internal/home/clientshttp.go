@@ -103,6 +103,8 @@ func (clients *clientsContainer) handleGetClients(w http.ResponseWriter, r *http
 		return true
 	})
 
+	clients.storage.UpdateDHCP()
+
 	clients.storage.RangeRuntime(func(rc *client.Runtime) (cont bool) {
 		src, host := rc.Info()
 		cj := runtimeClientJSON{
@@ -116,18 +118,6 @@ func (clients *clientsContainer) handleGetClients(w http.ResponseWriter, r *http
 
 		return true
 	})
-
-	// TODO(s.chzhen):  Remove.
-	for _, l := range clients.dhcp.Leases() {
-		cj := runtimeClientJSON{
-			Name:   l.Hostname,
-			Source: client.SourceDHCP,
-			IP:     l.IP,
-			WHOIS:  &whois.Info{},
-		}
-
-		data.RuntimeClients = append(data.RuntimeClients, cj)
-	}
 
 	data.Tags = clientTags
 

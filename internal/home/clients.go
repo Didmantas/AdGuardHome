@@ -1,6 +1,7 @@
 package home
 
 import (
+	"context"
 	"fmt"
 	"net/netip"
 	"slices"
@@ -110,7 +111,7 @@ func (clients *clientsContainer) Init(
 var webHandlersRegistered = false
 
 // Start starts the clients container.
-func (clients *clientsContainer) Start() {
+func (clients *clientsContainer) Start(ctx context.Context) (err error) {
 	if clients.testing {
 		return
 	}
@@ -120,7 +121,7 @@ func (clients *clientsContainer) Start() {
 		clients.registerWebHandlers()
 	}
 
-	clients.storage.Start()
+	return clients.storage.Start(ctx)
 }
 
 // clientObject is the YAML representation of a persistent client.

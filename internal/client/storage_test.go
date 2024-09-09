@@ -19,6 +19,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// testHostsContainer is a mock implementation of the [client.HostsContainer]
+// interface.
 type testHostsContainer struct {
 	onUpd func() (updates <-chan *hostsfile.DefaultStorage)
 }
@@ -26,6 +28,7 @@ type testHostsContainer struct {
 // type check
 var _ client.HostsContainer = (*testHostsContainer)(nil)
 
+// Upd implements the [client.HostsContainer] interface for *testHostsContainer.
 func (c *testHostsContainer) Upd() (updates <-chan *hostsfile.DefaultStorage) {
 	return c.onUpd()
 }
@@ -41,33 +44,42 @@ type Interface interface {
 	Neighbors() (ns []arpdb.Neighbor)
 }
 
+// testARP is a mock implementation of the [arpdb.Interface].
 type testARP struct {
-	onRefresh func() (err error)
-
+	onRefresh   func() (err error)
 	onNeighbors func() (ns []arpdb.Neighbor)
 }
 
+// type check
+var _ arpdb.Interface = (*testARP)(nil)
+
+// Refresh implements the [arpdb.Interface] interface for *testARP.
 func (c *testARP) Refresh() (err error) {
 	return c.onRefresh()
 }
 
+// Neighbors implements the [arpdb.Interface] interface for *testARP.
 func (c *testARP) Neighbors() (ns []arpdb.Neighbor) {
 	return c.onNeighbors()
 }
 
+// testDHCP is a mock implementation of the [client.DHCP].
 type testDHCP struct {
 	OnLeases func() (leases []*dhcpsvc.Lease)
 	OnHostBy func(ip netip.Addr) (host string)
 	OnMACBy  func(ip netip.Addr) (mac net.HardwareAddr)
 }
 
-// Lease implements the [DHCP] interface for testDHCP.
+// type check
+var _ client.DHCP = (*testDHCP)(nil)
+
+// Lease implements the [client.DHCP] interface for *testDHCP.
 func (t *testDHCP) Leases() (leases []*dhcpsvc.Lease) { return t.OnLeases() }
 
-// HostByIP implements the [DHCP] interface for testDHCP.
+// HostByIP implements the [client.DHCP] interface for *testDHCP.
 func (t *testDHCP) HostByIP(ip netip.Addr) (host string) { return t.OnHostBy(ip) }
 
-// MACByIP implements the [DHCP] interface for testDHCP.
+// MACByIP implements the [client.DHCP] interface for *testDHCP.
 func (t *testDHCP) MACByIP(ip netip.Addr) (mac net.HardwareAddr) { return t.OnMACBy(ip) }
 
 // compareRuntimeInfo is a helper function that returns true if the runtime
@@ -98,11 +110,17 @@ func TestStorage_Add_hostsfile(t *testing.T) {
 	}
 
 	storage, err := client.NewStorage(&client.Config{
-		EtcHosts: h,
+		EtcHosts:               h,
+		ARPClientsUpdatePeriod: testTimeout / 10,
 	})
 	require.NoError(t, err)
 
-	storage.Start()
+	err = storage.Start(testutil.ContextWithTimeout(t, testTimeout))
+	require.NoError(t, err)
+
+	testutil.CleanupAndRequireSuccess(t, func() (err error) {
+		return storage.Shutdown(testutil.ContextWithTimeout(t, testTimeout))
+	})
 
 	t.Run("add_hosts", func(t *testing.T) {
 		var s *hostsfile.DefaultStorage
@@ -184,7 +202,12 @@ func TestStorage_Add_arp(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	storage.Start()
+	err = storage.Start(testutil.ContextWithTimeout(t, testTimeout))
+	require.NoError(t, err)
+
+	testutil.CleanupAndRequireSuccess(t, func() (err error) {
+		return storage.Shutdown(testutil.ContextWithTimeout(t, testTimeout))
+	})
 
 	t.Run("add_hosts", func(t *testing.T) {
 		func() {
@@ -292,11 +315,19 @@ func TestStorage_Add_whois(t *testing.T) {
 func TestClientsDHCP(t *testing.T) {
 	var (
 		cliIP1   = netip.MustParseAddr("1.1.1.1")
-		cliName1 = "client_one"
+		cliName1 = "one.dhcp"
+
+		cliIP2   = netip.MustParseAddr("2.2.2.2")
+		cliMAC2  = mustParseMAC("22:22:22:22:22:22")
+		cliName2 = "two.dhcp"
+
+		cliIP3   = netip.MustParseAddr("3.3.3.3")
+		cliMAC3  = mustParseMAC("33:33:33:33:33:33")
+		cliName3 = "three.dhcp"
 
 		prsCliIP   = netip.MustParseAddr("4.3.2.1")
 		prsCliMAC  = mustParseMAC("AA:AA:AA:AA:AA:AA")
-		prsCliName = "persitent_client"
+		prsCliName = "persitent.dhcp"
 	)
 
 	ipToHost := map[netip.Addr]string{
@@ -306,8 +337,20 @@ func TestClientsDHCP(t *testing.T) {
 		prsCliIP: prsCliMAC,
 	}
 
+	leases := []*dhcpsvc.Lease{{
+		IP:       cliIP2,
+		Hostname: cliName2,
+		HWAddr:   cliMAC2,
+	}, {
+		IP:       cliIP3,
+		Hostname: cliName3,
+		HWAddr:   cliMAC3,
+	}}
+
 	d := &testDHCP{
-		OnLeases: func() (leases []*dhcpsvc.Lease) { panic("not implemented") },
+		OnLeases: func() (ls []*dhcpsvc.Lease) {
+			return leases
+		},
 		OnHostBy: func(ip netip.Addr) (host string) {
 			return ipToHost[ip]
 		},
@@ -340,6 +383,34 @@ func TestClientsDHCP(t *testing.T) {
 		require.True(t, ok)
 
 		assert.Equal(t, prsCliName, prsCli.Name)
+	})
+
+	t.Run("leases", func(t *testing.T) {
+		delete(ipToHost, cliIP1)
+		storage.UpdateDHCP()
+
+		cli1 := storage.ClientRuntime(cliIP1)
+		require.Nil(t, cli1)
+
+		for i, l := range leases {
+			cli := storage.ClientRuntime(l.IP)
+			require.NotNil(t, cli)
+
+			src, host := cli.Info()
+			assert.Equal(t, client.SourceDHCP, src)
+			assert.Equal(t, leases[i].Hostname, host)
+		}
+	})
+
+	t.Run("range", func(t *testing.T) {
+		s := 0
+		storage.RangeRuntime(func(rc *client.Runtime) (cont bool) {
+			s++
+
+			return true
+		})
+
+		assert.Equal(t, len(leases), s)
 	})
 }
 
@@ -437,14 +508,6 @@ func newStorage(tb testing.TB, m []*client.Persistent) (s *client.Storage) {
 	require.Equal(tb, len(m), s.Size())
 
 	return s
-}
-
-// newRuntimeClient is a helper function that returns a new runtime client.
-func newRuntimeClient(ip netip.Addr, source client.Source, host string) (rc *client.Runtime) {
-	rc = client.NewRuntime(ip)
-	rc.SetInfo(source, []string{host})
-
-	return rc
 }
 
 // mustParseMAC is wrapper around [net.ParseMAC] that panics if there is an
@@ -1036,160 +1099,4 @@ func TestStorage_RangeByName(t *testing.T) {
 			assert.Equal(t, tc.want, got)
 		})
 	}
-}
-
-func TestStorage_UpdateRuntime(t *testing.T) {
-	const (
-		addedARP       = "added_arp"
-		addedSecondARP = "added_arp"
-
-		updatedARP = "updated_arp"
-
-		cliCity    = "City"
-		cliCountry = "Country"
-		cliOrgname = "Orgname"
-	)
-
-	var (
-		ip  = netip.MustParseAddr("1.1.1.1")
-		ip2 = netip.MustParseAddr("2.2.2.2")
-	)
-
-	updated := client.NewRuntime(ip)
-	updated.SetInfo(client.SourceARP, []string{updatedARP})
-
-	info := &whois.Info{
-		City:    cliCity,
-		Country: cliCountry,
-		Orgname: cliOrgname,
-	}
-	updated.SetWHOIS(info)
-
-	s, err := client.NewStorage(&client.Config{
-		AllowedTags: nil,
-	})
-	require.NoError(t, err)
-
-	t.Run("add_arp_client", func(t *testing.T) {
-		added := client.NewRuntime(ip)
-		added.SetInfo(client.SourceARP, []string{addedARP})
-
-		require.True(t, s.UpdateRuntime(added))
-		require.Equal(t, 1, s.SizeRuntime())
-
-		got := s.ClientRuntime(ip)
-		source, host := got.Info()
-		assert.Equal(t, client.SourceARP, source)
-		assert.Equal(t, addedARP, host)
-	})
-
-	t.Run("add_second_arp_client", func(t *testing.T) {
-		added := client.NewRuntime(ip2)
-		added.SetInfo(client.SourceARP, []string{addedSecondARP})
-
-		require.True(t, s.UpdateRuntime(added))
-		require.Equal(t, 2, s.SizeRuntime())
-
-		got := s.ClientRuntime(ip2)
-		source, host := got.Info()
-		assert.Equal(t, client.SourceARP, source)
-		assert.Equal(t, addedSecondARP, host)
-	})
-
-	t.Run("update_first_client", func(t *testing.T) {
-		require.False(t, s.UpdateRuntime(updated))
-		got := s.ClientRuntime(ip)
-		require.Equal(t, 2, s.SizeRuntime())
-
-		source, host := got.Info()
-		assert.Equal(t, client.SourceARP, source)
-		assert.Equal(t, updatedARP, host)
-	})
-
-	t.Run("remove_arp_info", func(t *testing.T) {
-		n := s.DeleteBySource(client.SourceARP)
-		require.Equal(t, 1, n)
-		require.Equal(t, 1, s.SizeRuntime())
-
-		got := s.ClientRuntime(ip)
-		source, _ := got.Info()
-		assert.Equal(t, client.SourceWHOIS, source)
-		assert.Equal(t, info, got.WHOIS())
-	})
-
-	t.Run("remove_whois_info", func(t *testing.T) {
-		n := s.DeleteBySource(client.SourceWHOIS)
-		require.Equal(t, 1, n)
-		require.Equal(t, 0, s.SizeRuntime())
-	})
-}
-
-func TestStorage_BatchUpdateBySource(t *testing.T) {
-	const (
-		defSrc = client.SourceARP
-
-		cliFirstHost1   = "host1"
-		cliFirstHost2   = "host2"
-		cliUpdatedHost3 = "host3"
-		cliUpdatedHost4 = "host4"
-		cliUpdatedHost5 = "host5"
-	)
-
-	var (
-		cliFirstIP1   = netip.MustParseAddr("1.1.1.1")
-		cliFirstIP2   = netip.MustParseAddr("2.2.2.2")
-		cliUpdatedIP3 = netip.MustParseAddr("3.3.3.3")
-		cliUpdatedIP4 = netip.MustParseAddr("4.4.4.4")
-		cliUpdatedIP5 = netip.MustParseAddr("5.5.5.5")
-	)
-
-	firstClients := []*client.Runtime{
-		newRuntimeClient(cliFirstIP1, defSrc, cliFirstHost1),
-		newRuntimeClient(cliFirstIP2, defSrc, cliFirstHost2),
-	}
-
-	updatedClients := []*client.Runtime{
-		newRuntimeClient(cliUpdatedIP3, defSrc, cliUpdatedHost3),
-		newRuntimeClient(cliUpdatedIP4, defSrc, cliUpdatedHost4),
-		newRuntimeClient(cliUpdatedIP5, defSrc, cliUpdatedHost5),
-	}
-
-	s, err := client.NewStorage(&client.Config{
-		AllowedTags: nil,
-	})
-	require.NoError(t, err)
-
-	t.Run("populate_storage_with_first_clients", func(t *testing.T) {
-		added, removed := s.BatchUpdateBySource(defSrc, firstClients)
-		require.Equal(t, len(firstClients), added)
-		require.Equal(t, 0, removed)
-		require.Equal(t, len(firstClients), s.SizeRuntime())
-
-		rc := s.ClientRuntime(cliFirstIP1)
-		src, host := rc.Info()
-		assert.Equal(t, defSrc, src)
-		assert.Equal(t, cliFirstHost1, host)
-	})
-
-	t.Run("update_storage", func(t *testing.T) {
-		added, removed := s.BatchUpdateBySource(defSrc, updatedClients)
-		require.Equal(t, len(updatedClients), added)
-		require.Equal(t, len(firstClients), removed)
-		require.Equal(t, len(updatedClients), s.SizeRuntime())
-
-		rc := s.ClientRuntime(cliUpdatedIP3)
-		src, host := rc.Info()
-		assert.Equal(t, defSrc, src)
-		assert.Equal(t, cliUpdatedHost3, host)
-
-		rc = s.ClientRuntime(cliFirstIP1)
-		assert.Nil(t, rc)
-	})
-
-	t.Run("remove_all", func(t *testing.T) {
-		added, removed := s.BatchUpdateBySource(defSrc, []*client.Runtime{})
-		require.Equal(t, 0, added)
-		require.Equal(t, len(updatedClients), removed)
-		require.Equal(t, 0, s.SizeRuntime())
-	})
 }
