@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/AdguardTeam/AdGuardHome/internal/aghnet"
 	"github.com/AdguardTeam/AdGuardHome/internal/arpdb"
 	"github.com/AdguardTeam/AdGuardHome/internal/dhcpsvc"
 	"github.com/AdguardTeam/AdGuardHome/internal/whois"
@@ -124,6 +125,14 @@ func NewStorage(conf *Config) (s *Storage, err error) {
 		done:                   make(chan struct{}),
 	}
 
+	// TODO(s.chzhen):  Refactor it.
+	switch v := s.etcHosts.(type) {
+	case *aghnet.HostsContainer:
+		if v == nil {
+			s.etcHosts = nil
+		}
+	}
+
 	for i, p := range conf.InitialClients {
 		err = s.Add(p)
 		if err != nil {
@@ -146,13 +155,16 @@ func (s *Storage) Start(_ context.Context) (err error) {
 func (s *Storage) Shutdown(_ context.Context) (err error) {
 	close(s.done)
 
-	return nil
+	return s.closeUpstreams()
 }
 
 // periodicARPUpdate periodically reloads runtime clients from ARP.  It is
 // intended to be used as a goroutine.
 func (s *Storage) periodicARPUpdate() {
 	defer log.OnPanic("storage")
+
+	// Initial ARP refresh.
+	s.ReloadARP()
 
 	t := time.NewTicker(s.arpClientsUpdatePeriod)
 
@@ -216,7 +228,11 @@ func (s *Storage) handleHostsUpdates() {
 
 	for {
 		select {
-		case upd := <-s.etcHosts.Upd():
+		case upd, ok := <-s.etcHosts.Upd():
+			if !ok {
+				return
+			}
+
 			s.addFromHostsFile(upd)
 		case <-s.done:
 			return
@@ -490,8 +506,8 @@ func (s *Storage) Size() (n int) {
 	return s.index.size()
 }
 
-// CloseUpstreams closes upstream configurations of persistent clients.
-func (s *Storage) CloseUpstreams() (err error) {
+// closeUpstreams closes upstream configurations of persistent clients.
+func (s *Storage) closeUpstreams() (err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 

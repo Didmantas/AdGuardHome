@@ -401,6 +401,6 @@ func (clients *clientsContainer) UpdateAddress(ip netip.Addr, host string, info 
 
 // close gracefully closes all the client-specific upstream configurations of
 // the persistent clients.
-func (clients *clientsContainer) close() (err error) {
-	return clients.storage.CloseUpstreams()
+func (clients *clientsContainer) close(ctx context.Context) (err error) {
+	return clients.storage.Shutdown(ctx)
 }
