@@ -89,6 +89,16 @@ func (clients *clientsContainer) Init(
 		confClients = append(confClients, p)
 	}
 
+	// The clients.etcHosts may be nil even if config.Clients.Sources.HostsFile
+	// is true, because of the deprecated option --no-etc-hosts.
+	//
+	// TODO(e.burkov):  The option should probably be returned, since hosts file
+	// currently used not only for clients' information enrichment, but also in
+	// the filtering module and upstream addresses resolution.
+	if !config.Clients.Sources.HostsFile {
+		etcHosts = nil
+	}
+
 	clients.storage, err = client.NewStorage(&client.Config{
 		AllowedTags:            clientTags,
 		InitialClients:         confClients,
