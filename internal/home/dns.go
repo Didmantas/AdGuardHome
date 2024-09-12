@@ -460,12 +460,12 @@ func startDNSServer() error {
 
 	err := Context.clients.Start(context.TODO())
 	if err != nil {
-		return fmt.Errorf("couldn't start clients container: %w", err)
+		return fmt.Errorf("starting clients container: %w", err)
 	}
 
 	err = Context.dnsServer.Start()
 	if err != nil {
-		return fmt.Errorf("couldn't start forwarding DNS server: %w", err)
+		return fmt.Errorf("starting dns server: %w", err)
 	}
 
 	Context.filters.Start()

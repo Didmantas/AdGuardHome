@@ -44,22 +44,22 @@ type Interface interface {
 	Neighbors() (ns []arpdb.Neighbor)
 }
 
-// testARP is a mock implementation of the [arpdb.Interface].
-type testARP struct {
+// testARPDB is a mock implementation of the [arpdb.Interface].
+type testARPDB struct {
 	onRefresh   func() (err error)
 	onNeighbors func() (ns []arpdb.Neighbor)
 }
 
 // type check
-var _ arpdb.Interface = (*testARP)(nil)
+var _ arpdb.Interface = (*testARPDB)(nil)
 
 // Refresh implements the [arpdb.Interface] interface for *testARP.
-func (c *testARP) Refresh() (err error) {
+func (c *testARPDB) Refresh() (err error) {
 	return c.onRefresh()
 }
 
 // Neighbors implements the [arpdb.Interface] interface for *testARP.
-func (c *testARP) Neighbors() (ns []arpdb.Neighbor) {
+func (c *testARPDB) Neighbors() (ns []arpdb.Neighbor) {
 	return c.onNeighbors()
 }
 
@@ -186,7 +186,7 @@ func TestStorage_Add_arp(t *testing.T) {
 		cliName2 = "client_two"
 	)
 
-	a := &testARP{
+	a := &testARPDB{
 		onRefresh: func() (err error) { return nil },
 		onNeighbors: func() (ns []arpdb.Neighbor) {
 			mu.Lock()
@@ -327,7 +327,7 @@ func TestClientsDHCP(t *testing.T) {
 
 		prsCliIP   = netip.MustParseAddr("4.3.2.1")
 		prsCliMAC  = mustParseMAC("AA:AA:AA:AA:AA:AA")
-		prsCliName = "persitent.dhcp"
+		prsCliName = "persistent.dhcp"
 	)
 
 	ipToHost := map[netip.Addr]string{

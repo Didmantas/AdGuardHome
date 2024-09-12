@@ -28,8 +28,8 @@ func (ri *runtimeIndex) add(rc *Runtime) {
 	ri.index[ip] = rc
 }
 
-// rangeF calls f for each runtime client in an undefined order.
-func (ri *runtimeIndex) rangeF(f func(rc *Runtime) (cont bool)) {
+// rangeClients calls f for each runtime client in an undefined order.
+func (ri *runtimeIndex) rangeClients(f func(rc *Runtime) (cont bool)) {
 	for _, rc := range ri.index {
 		if !f(rc) {
 			return

@@ -125,20 +125,18 @@ func NewStorage(conf *Config) (s *Storage, err error) {
 		done:                   make(chan struct{}),
 	}
 
-	// TODO(s.chzhen):  Refactor it.
-	switch v := s.etcHosts.(type) {
-	case *aghnet.HostsContainer:
-		if v == nil {
-			s.etcHosts = nil
-		}
-	}
-
 	for i, p := range conf.InitialClients {
 		err = s.Add(p)
 		if err != nil {
 			return nil, fmt.Errorf("adding client %q at index %d: %w", p.Name, i, err)
 		}
 	}
+
+	if hc, ok := s.etcHosts.(*aghnet.HostsContainer); ok && hc == nil {
+		s.etcHosts = nil
+	}
+
+	s.ReloadARP()
 
 	return s, nil
 }
@@ -162,9 +160,6 @@ func (s *Storage) Shutdown(_ context.Context) (err error) {
 // intended to be used as a goroutine.
 func (s *Storage) periodicARPUpdate() {
 	defer log.OnPanic("storage")
-
-	// Initial ARP refresh.
-	s.ReloadARP()
 
 	t := time.NewTicker(s.arpClientsUpdatePeriod)
 
@@ -376,6 +371,9 @@ func (s *Storage) FindByName(name string) (p *Persistent, ok bool) {
 
 // Find finds persistent client by string representation of the client ID, IP
 // address, or MAC.  And returns its shallow copy.
+//
+// TODO(s.chzhen):  Accept ClientIDData structure instead, which will contain
+// the parsed IP address, if any.
 func (s *Storage) Find(id string) (p *Persistent, ok bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -540,5 +538,5 @@ func (s *Storage) RangeRuntime(f func(rc *Runtime) (cont bool)) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	s.runtimeIndex.rangeF(f)
+	s.runtimeIndex.rangeClients(f)
 }
