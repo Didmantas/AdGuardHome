@@ -20,7 +20,7 @@ func newClientsContainer(t *testing.T) (c *clientsContainer) {
 		testing: true,
 	}
 
-	require.NoError(t, c.Init(nil, nil, nil, nil, &filtering.Config{}))
+	require.NoError(t, c.Init(nil, client.EmptyDHCP{}, nil, nil, &filtering.Config{}))
 
 	return c
 }

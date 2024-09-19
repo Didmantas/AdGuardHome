@@ -109,7 +109,8 @@ func TestStorage_Add_hostsfile(t *testing.T) {
 		onUpd: func() (updates <-chan *hostsfile.DefaultStorage) { return hostCh },
 	}
 
-	storage, err := client.NewStorage(&client.Config{
+	storage, err := client.NewStorage(&client.StorageConfig{
+		DHCP:                   client.EmptyDHCP{},
 		EtcHosts:               h,
 		ARPClientsUpdatePeriod: testTimeout / 10,
 	})
@@ -196,7 +197,8 @@ func TestStorage_Add_arp(t *testing.T) {
 		},
 	}
 
-	storage, err := client.NewStorage(&client.Config{
+	storage, err := client.NewStorage(&client.StorageConfig{
+		DHCP:                   client.EmptyDHCP{},
 		ARPDB:                  a,
 		ARPClientsUpdatePeriod: testTimeout / 10,
 	})
@@ -270,7 +272,9 @@ func TestStorage_Add_whois(t *testing.T) {
 		cliName3 = "client_three"
 	)
 
-	storage, err := client.NewStorage(&client.Config{})
+	storage, err := client.NewStorage(&client.StorageConfig{
+		DHCP: client.EmptyDHCP{},
+	})
 	require.NoError(t, err)
 
 	whois := &whois.Info{
@@ -359,7 +363,7 @@ func TestClientsDHCP(t *testing.T) {
 		},
 	}
 
-	storage, err := client.NewStorage(&client.Config{
+	storage, err := client.NewStorage(&client.StorageConfig{
 		DHCP: d,
 	})
 	require.NoError(t, err)
@@ -431,7 +435,7 @@ func TestClientsAddExisting(t *testing.T) {
 	dhcpServer, err := dhcpd.Create(config)
 	require.NoError(t, err)
 
-	storage, err := client.NewStorage(&client.Config{
+	storage, err := client.NewStorage(&client.StorageConfig{
 		DHCP: dhcpServer,
 	})
 	require.NoError(t, err)
@@ -495,8 +499,8 @@ func TestClientsAddExisting(t *testing.T) {
 func newStorage(tb testing.TB, m []*client.Persistent) (s *client.Storage) {
 	tb.Helper()
 
-	s, err := client.NewStorage(&client.Config{
-		AllowedTags: nil,
+	s, err := client.NewStorage(&client.StorageConfig{
+		DHCP: client.EmptyDHCP{},
 	})
 	require.NoError(tb, err)
 
@@ -544,9 +548,7 @@ func TestStorage_Add(t *testing.T) {
 		UID:       existingClientUID,
 	}
 
-	s, err := client.NewStorage(&client.Config{
-		AllowedTags: []string{allowedTag},
-	})
+	s, err := client.NewStorage(&client.StorageConfig{})
 	require.NoError(t, err)
 
 	err = s.Add(existingClient)
@@ -637,9 +639,7 @@ func TestStorage_RemoveByName(t *testing.T) {
 		UID:  client.MustNewUID(),
 	}
 
-	s, err := client.NewStorage(&client.Config{
-		AllowedTags: nil,
-	})
+	s, err := client.NewStorage(&client.StorageConfig{})
 	require.NoError(t, err)
 
 	err = s.Add(existingClient)
@@ -666,9 +666,7 @@ func TestStorage_RemoveByName(t *testing.T) {
 	}
 
 	t.Run("duplicate_remove", func(t *testing.T) {
-		s, err = client.NewStorage(&client.Config{
-			AllowedTags: nil,
-		})
+		s, err = client.NewStorage(&client.StorageConfig{})
 		require.NoError(t, err)
 
 		err = s.Add(existingClient)

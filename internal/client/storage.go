@@ -1,7 +1,6 @@
 package client
 
 import (
-	"cmp"
 	"context"
 	"fmt"
 	"net"
@@ -9,7 +8,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/AdguardTeam/AdGuardHome/internal/aghnet"
 	"github.com/AdguardTeam/AdGuardHome/internal/arpdb"
 	"github.com/AdguardTeam/AdGuardHome/internal/dhcpsvc"
 	"github.com/AdguardTeam/AdGuardHome/internal/whois"
@@ -18,6 +16,33 @@ import (
 	"github.com/AdguardTeam/golibs/hostsfile"
 	"github.com/AdguardTeam/golibs/log"
 )
+
+// Tags is the list of available client tags.
+var Tags = []string{
+	"device_audio",
+	"device_camera",
+	"device_gameconsole",
+	"device_laptop",
+	"device_nas", // Network-attached Storage
+	"device_other",
+	"device_pc",
+	"device_phone",
+	"device_printer",
+	"device_securityalarm",
+	"device_tablet",
+	"device_tv",
+
+	"os_android",
+	"os_ios",
+	"os_linux",
+	"os_macos",
+	"os_other",
+	"os_windows",
+
+	"user_admin",
+	"user_child",
+	"user_regular",
+}
 
 // DHCP is an interface for accessing DHCP lease data the [Storage] needs.
 type DHCP interface {
@@ -35,20 +60,20 @@ type DHCP interface {
 	MACByIP(ip netip.Addr) (mac net.HardwareAddr)
 }
 
-// emptyDHCP is the empty [DHCP] implementation that does nothing.
-type emptyDHCP struct{}
+// EmptyDHCP is the empty [DHCP] implementation that does nothing.
+type EmptyDHCP struct{}
 
 // type check
-var _ DHCP = emptyDHCP{}
+var _ DHCP = EmptyDHCP{}
 
 // Leases implements the [DHCP] interface for emptyDHCP.
-func (emptyDHCP) Leases() (leases []*dhcpsvc.Lease) { return nil }
+func (EmptyDHCP) Leases() (leases []*dhcpsvc.Lease) { return nil }
 
 // HostByIP implements the [DHCP] interface for emptyDHCP.
-func (emptyDHCP) HostByIP(_ netip.Addr) (host string) { return "" }
+func (EmptyDHCP) HostByIP(_ netip.Addr) (host string) { return "" }
 
 // MACByIP implements the [DHCP] interface for emptyDHCP.
-func (emptyDHCP) MACByIP(_ netip.Addr) (mac net.HardwareAddr) { return nil }
+func (EmptyDHCP) MACByIP(_ netip.Addr) (mac net.HardwareAddr) { return nil }
 
 // HostsContainer is an interface for receiving updates to the system hosts
 // file.
@@ -56,9 +81,10 @@ type HostsContainer interface {
 	Upd() (updates <-chan *hostsfile.DefaultStorage)
 }
 
-// Config is the client storage configuration structure.
-type Config struct {
-	// DHCP is used to update [SourceDHCP] runtime client information.
+// StorageConfig is the client storage configuration structure.
+type StorageConfig struct {
+	// DHCP is used to update [SourceDHCP] runtime client information.  It must
+	// not be nil.
 	DHCP DHCP
 
 	// EtcHosts is used to update [SourceHostsFile] runtime client information.
@@ -66,9 +92,6 @@ type Config struct {
 
 	// ARPDB is used to update [SourceARP] runtime client information.
 	ARPDB arpdb.Interface
-
-	// AllowedTags is a list of all allowed client tags.
-	AllowedTags []string
 
 	// InitialClients is a list of persistent clients parsed from the
 	// configuration file.  Each client must not be nil.
@@ -111,14 +134,13 @@ type Storage struct {
 }
 
 // NewStorage returns initialized client storage.  conf must not be nil.
-func NewStorage(conf *Config) (s *Storage, err error) {
-	allowedTags := container.NewMapSet(conf.AllowedTags...)
+func NewStorage(conf *StorageConfig) (s *Storage, err error) {
 	s = &Storage{
-		allowedTags:            allowedTags,
+		allowedTags:            container.NewMapSet(Tags...),
 		mu:                     &sync.Mutex{},
 		index:                  newIndex(),
 		runtimeIndex:           newRuntimeIndex(),
-		dhcp:                   cmp.Or(conf.DHCP, DHCP(emptyDHCP{})),
+		dhcp:                   conf.DHCP,
 		etcHosts:               conf.EtcHosts,
 		arpDB:                  conf.ARPDB,
 		arpClientsUpdatePeriod: conf.ARPClientsUpdatePeriod,
@@ -132,16 +154,14 @@ func NewStorage(conf *Config) (s *Storage, err error) {
 		}
 	}
 
-	if hc, ok := s.etcHosts.(*aghnet.HostsContainer); ok && hc == nil {
-		s.etcHosts = nil
-	}
-
 	s.ReloadARP()
 
 	return s, nil
 }
 
 // Start starts the goroutines for updating the runtime client information.
+//
+// TODO(s.chzhen):  Pass context.
 func (s *Storage) Start(_ context.Context) (err error) {
 	go s.periodicARPUpdate()
 	go s.handleHostsUpdates()
@@ -150,6 +170,8 @@ func (s *Storage) Start(_ context.Context) (err error) {
 }
 
 // Shutdown gracefully stops the client storage.
+//
+// TODO(s.chzhen):  Pass context.
 func (s *Storage) Shutdown(_ context.Context) (err error) {
 	close(s.done)
 
