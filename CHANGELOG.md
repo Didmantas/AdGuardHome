@@ -27,6 +27,11 @@ See also the [v0.107.53 GitHub milestone][ms-v0.107.53].
 NOTE: Add new changes BELOW THIS COMMENT.
 -->
 
+### Security
+
+- Go version has been updated to prevent the possibility of exploiting the Go
+  vulnerabilities fixed in [1.23.1][go-1.23.1].
+
 ### Added
 
 - Support for 64-bit RISC-V architecture ([#5704]).
@@ -36,10 +41,11 @@ NOTE: Add new changes BELOW THIS COMMENT.
 
 - Upstream server URL domain names requirements has been relaxed and now follow
   the same rules as their domain specifications.
-- Go version has been updated to [1.22.6][go-1.22.6].
 
 ### Fixed
 
+- Property `clients.runtime_sources.dhcp` in the configuration file not taking
+  effect.
 - Update Google safe search domains list ([#7155]).
 - Enforce Bing safe search from Edge sidebar ([#7154]).
 - Text overflow on the query log page ([#7119]).
@@ -49,7 +55,7 @@ NOTE: Add new changes BELOW THIS COMMENT.
 [#7154]: https://github.com/AdguardTeam/AdGuardHome/pull/7154
 [#7155]: https://github.com/AdguardTeam/AdGuardHome/pull/7155
 
-[go-1.22.6]: https://groups.google.com/g/golang-announce/c/X4q_-Wf-5g4
+[go-1.23.1]: https://groups.google.com/g/golang-announce/c/K-cEzDeCtpc
 
 <!--
 NOTE: Add new changes ABOVE THIS COMMENT.
