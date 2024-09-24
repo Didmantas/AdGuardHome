@@ -420,28 +420,12 @@ func TestClientsDHCP(t *testing.T) {
 }
 
 func TestClientsAddExisting(t *testing.T) {
-	// First, init a DHCP server with a single static lease.
-	config := &dhcpd.ServerConfig{
-		Enabled: true,
-		DataDir: t.TempDir(),
-		Conf4: dhcpd.V4ServerConf{
-			Enabled:    true,
-			GatewayIP:  netip.MustParseAddr("1.2.3.1"),
-			SubnetMask: netip.MustParseAddr("255.255.255.0"),
-			RangeStart: netip.MustParseAddr("1.2.3.2"),
-			RangeEnd:   netip.MustParseAddr("1.2.3.10"),
-		},
-	}
-
-	dhcpServer, err := dhcpd.Create(config)
-	require.NoError(t, err)
-
-	storage, err := client.NewStorage(&client.StorageConfig{
-		DHCP: dhcpServer,
-	})
-	require.NoError(t, err)
-
 	t.Run("simple", func(t *testing.T) {
+		storage, err := client.NewStorage(&client.StorageConfig{
+			DHCP: client.EmptyDHCP{},
+		})
+		require.NoError(t, err)
+
 		ip := netip.MustParseAddr("1.1.1.1")
 
 		// Add a client.
@@ -466,6 +450,27 @@ func TestClientsAddExisting(t *testing.T) {
 		if runtime.GOOS == "windows" {
 			t.Skip("skipping dhcp test on windows")
 		}
+
+		// First, init a DHCP server with a single static lease.
+		config := &dhcpd.ServerConfig{
+			Enabled: true,
+			DataDir: t.TempDir(),
+			Conf4: dhcpd.V4ServerConf{
+				Enabled:    true,
+				GatewayIP:  netip.MustParseAddr("1.2.3.1"),
+				SubnetMask: netip.MustParseAddr("255.255.255.0"),
+				RangeStart: netip.MustParseAddr("1.2.3.2"),
+				RangeEnd:   netip.MustParseAddr("1.2.3.10"),
+			},
+		}
+
+		dhcpServer, err := dhcpd.Create(config)
+		require.NoError(t, err)
+
+		storage, err := client.NewStorage(&client.StorageConfig{
+			DHCP: dhcpServer,
+		})
+		require.NoError(t, err)
 
 		ip := netip.MustParseAddr("1.2.3.4")
 
