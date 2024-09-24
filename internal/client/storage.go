@@ -83,8 +83,8 @@ type HostsContainer interface {
 
 // StorageConfig is the client storage configuration structure.
 type StorageConfig struct {
-	// DHCP is used to update [SourceDHCP] runtime client information.  It must
-	// not be nil.
+	// DHCP is used to match IPs against MACs of persistent clients and update
+	// [SourceDHCP] runtime client information.  It must not be nil.
 	DHCP DHCP
 
 	// EtcHosts is used to update [SourceHostsFile] runtime client information.
@@ -100,6 +100,10 @@ type StorageConfig struct {
 	// ARPClientsUpdatePeriod defines how often [SourceARP] runtime client
 	// information is updated.
 	ARPClientsUpdatePeriod time.Duration
+
+	// RuntimeSourceDHCP specifies whether to update [SourceDHCP] information
+	// of runtime clients.
+	RuntimeSourceDHCP bool
 }
 
 // Storage contains information about persistent and runtime clients.
@@ -131,6 +135,10 @@ type Storage struct {
 	// arpClientsUpdatePeriod defines how often [SourceARP] runtime client
 	// information is updated.  It must be greater than zero.
 	arpClientsUpdatePeriod time.Duration
+
+	// runtimeSourceDHCP specifies whether to update [SourceDHCP] information
+	// of runtime clients.
+	runtimeSourceDHCP bool
 }
 
 // NewStorage returns initialized client storage.  conf must not be nil.
@@ -143,8 +151,9 @@ func NewStorage(conf *StorageConfig) (s *Storage, err error) {
 		dhcp:                   conf.DHCP,
 		etcHosts:               conf.EtcHosts,
 		arpDB:                  conf.ARPDB,
-		arpClientsUpdatePeriod: conf.ARPClientsUpdatePeriod,
 		done:                   make(chan struct{}),
+		arpClientsUpdatePeriod: conf.ARPClientsUpdatePeriod,
+		runtimeSourceDHCP:      conf.RuntimeSourceDHCP,
 	}
 
 	for i, p := range conf.InitialClients {
@@ -306,7 +315,7 @@ func (s *Storage) UpdateAddress(ip netip.Addr, host string, info *whois.Info) {
 
 // UpdateDHCP updates [SourceDHCP] runtime client information.
 func (s *Storage) UpdateDHCP() {
-	if s.dhcp == nil {
+	if s.dhcp == nil || !s.runtimeSourceDHCP {
 		return
 	}
 
@@ -543,6 +552,10 @@ func (s *Storage) ClientRuntime(ip netip.Addr) (rc *Runtime) {
 	rc = s.runtimeIndex.client(ip)
 	if rc != nil {
 		return rc.clone()
+	}
+
+	if !s.runtimeSourceDHCP {
+		return nil
 	}
 
 	host := s.dhcp.HostByIP(ip)

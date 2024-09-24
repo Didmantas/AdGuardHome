@@ -364,7 +364,8 @@ func TestClientsDHCP(t *testing.T) {
 	}
 
 	storage, err := client.NewStorage(&client.StorageConfig{
-		DHCP: d,
+		DHCP:              d,
+		RuntimeSourceDHCP: true,
 	})
 	require.NoError(t, err)
 

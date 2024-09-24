@@ -27,9 +27,6 @@ type clientsContainer struct {
 	// storage stores information about persistent clients.
 	storage *client.Storage
 
-	// dhcp is the DHCP service implementation.
-	dhcp client.DHCP
-
 	// clientChecker checks if a client is blocked by the current access
 	// settings.
 	clientChecker BlockedClientChecker
@@ -75,9 +72,6 @@ func (clients *clientsContainer) Init(
 		return errors.Error("clients container already initialized")
 	}
 
-	// TODO(e.burkov):  Use [dhcpsvc] implementation when it's ready.
-	clients.dhcp = dhcpServer
-
 	confClients := make([]*client.Persistent, 0, len(objects))
 	for i, o := range objects {
 		var p *client.Persistent
@@ -106,6 +100,7 @@ func (clients *clientsContainer) Init(
 		EtcHosts:               EtcHosts,
 		ARPDB:                  arpDB,
 		ARPClientsUpdatePeriod: arpClientsUpdatePeriod,
+		RuntimeSourceDHCP:      config.Clients.Sources.DHCP,
 	})
 	if err != nil {
 		return fmt.Errorf("init client storage: %w", err)
