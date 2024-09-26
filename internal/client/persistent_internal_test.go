@@ -4,7 +4,6 @@ import (
 	"net/netip"
 	"testing"
 
-	"github.com/AdguardTeam/golibs/container"
 	"github.com/AdguardTeam/golibs/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -132,7 +131,7 @@ func TestPersistent_Validate(t *testing.T) {
 		notAllowedTag = "not_allowed_tag"
 	)
 
-	allowedTags := container.NewMapSet(allowedTag)
+	allowedTags := []string{allowedTag}
 
 	testCases := []struct {
 		name       string

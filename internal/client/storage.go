@@ -5,13 +5,13 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"slices"
 	"sync"
 	"time"
 
 	"github.com/AdguardTeam/AdGuardHome/internal/arpdb"
 	"github.com/AdguardTeam/AdGuardHome/internal/dhcpsvc"
 	"github.com/AdguardTeam/AdGuardHome/internal/whois"
-	"github.com/AdguardTeam/golibs/container"
 	"github.com/AdguardTeam/golibs/errors"
 	"github.com/AdguardTeam/golibs/hostsfile"
 	"github.com/AdguardTeam/golibs/log"
@@ -108,9 +108,6 @@ type StorageConfig struct {
 
 // Storage contains information about persistent and runtime clients.
 type Storage struct {
-	// allowedTags is a set of all allowed tags.
-	allowedTags *container.MapSet[string]
-
 	// mu protects indexes of persistent and runtime clients.
 	mu *sync.Mutex
 
@@ -132,6 +129,12 @@ type Storage struct {
 	// done is the shutdown signaling channel.
 	done chan struct{}
 
+	// allowedTags is a sorted list of all allowed tags.  It must not be
+	// modified after initialization.
+	//
+	// TODO(s.chzhen):  Use custom type.
+	allowedTags []string
+
 	// arpClientsUpdatePeriod defines how often [SourceARP] runtime client
 	// information is updated.  It must be greater than zero.
 	arpClientsUpdatePeriod time.Duration
@@ -143,8 +146,11 @@ type Storage struct {
 
 // NewStorage returns initialized client storage.  conf must not be nil.
 func NewStorage(conf *StorageConfig) (s *Storage, err error) {
+	tags := slices.Clone(allowedTags)
+	slices.Sort(tags)
+
 	s = &Storage{
-		allowedTags:            container.NewMapSet(allowedTags...),
+		allowedTags:            tags,
 		mu:                     &sync.Mutex{},
 		index:                  newIndex(),
 		runtimeIndex:           newRuntimeIndex(),
@@ -576,7 +582,8 @@ func (s *Storage) RangeRuntime(f func(rc *Runtime) (cont bool)) {
 	s.runtimeIndex.rangeClients(f)
 }
 
-// AllowedTags returns the list of available client tags.
+// AllowedTags returns the list of available client tags.  tags must not be
+// modified.
 func (s *Storage) AllowedTags() (tags []string) {
-	return allowedTags
+	return s.allowedTags
 }

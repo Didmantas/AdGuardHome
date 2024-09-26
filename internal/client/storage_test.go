@@ -4,6 +4,7 @@ import (
 	"net"
 	"net/netip"
 	"runtime"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -536,7 +537,7 @@ func TestStorage_Add(t *testing.T) {
 		existingName     = "existing_name"
 		existingClientID = "existing_client_id"
 
-		allowedTag    = "tag"
+		allowedTag    = "user_admin"
 		notAllowedTag = "not_allowed_tag"
 	)
 
@@ -556,6 +557,16 @@ func TestStorage_Add(t *testing.T) {
 
 	s, err := client.NewStorage(&client.StorageConfig{})
 	require.NoError(t, err)
+
+	tags := s.AllowedTags()
+	require.NotZero(t, len(tags))
+	require.True(t, slices.IsSorted(tags))
+
+	_, ok := slices.BinarySearch(tags, allowedTag)
+	require.True(t, ok)
+
+	_, ok = slices.BinarySearch(tags, notAllowedTag)
+	require.False(t, ok)
 
 	err = s.Add(existingClient)
 	require.NoError(t, err)
@@ -617,12 +628,21 @@ func TestStorage_Add(t *testing.T) {
 	}, {
 		name: "not_allowed_tag",
 		cli: &client.Persistent{
-			Name: "nont_allowed_tag",
+			Name: "not_allowed_tag",
 			Tags: []string{notAllowedTag},
 			IPs:  []netip.Addr{netip.MustParseAddr("4.4.4.4")},
 			UID:  client.MustNewUID(),
 		},
 		wantErrMsg: `adding client: invalid tag: "not_allowed_tag"`,
+	}, {
+		name: "allowed_tag",
+		cli: &client.Persistent{
+			Name: "allowed_tag",
+			Tags: []string{allowedTag},
+			IPs:  []netip.Addr{netip.MustParseAddr("5.5.5.5")},
+			UID:  client.MustNewUID(),
+		},
+		wantErrMsg: "",
 	}}
 
 	for _, tc := range testCases {
