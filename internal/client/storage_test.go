@@ -643,6 +643,28 @@ func TestStorage_Add(t *testing.T) {
 			UID:  client.MustNewUID(),
 		},
 		wantErrMsg: "",
+	}, {
+		name: "",
+		cli: &client.Persistent{
+			Name: "",
+			IPs:  []netip.Addr{netip.MustParseAddr("6.6.6.6")},
+			UID:  client.MustNewUID(),
+		},
+		wantErrMsg: "adding client: empty name",
+	}, {
+		name: "no_id",
+		cli: &client.Persistent{
+			Name: "no_id",
+			UID:  client.MustNewUID(),
+		},
+		wantErrMsg: "adding client: id required",
+	}, {
+		name: "no_uid",
+		cli: &client.Persistent{
+			Name: "no_uid",
+			IPs:  []netip.Addr{netip.MustParseAddr("7.7.7.7")},
+		},
+		wantErrMsg: "adding client: uid required",
 	}}
 
 	for _, tc := range testCases {
