@@ -119,7 +119,7 @@ func (clients *clientsContainer) handleGetClients(w http.ResponseWriter, r *http
 		return true
 	})
 
-	data.Tags = client.Tags
+	data.Tags = clients.storage.AllowedTags()
 
 	aghhttp.WriteJSONResponseOK(w, r, data)
 }

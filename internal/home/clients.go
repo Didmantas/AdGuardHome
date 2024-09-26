@@ -89,15 +89,15 @@ func (clients *clientsContainer) Init(
 	// TODO(e.burkov):  The option should probably be returned, since hosts file
 	// currently used not only for clients' information enrichment, but also in
 	// the filtering module and upstream addresses resolution.
-	var EtcHosts client.HostsContainer = etcHosts
+	var hosts client.HostsContainer = etcHosts
 	if !config.Clients.Sources.HostsFile {
-		EtcHosts = nil
+		hosts = nil
 	}
 
 	clients.storage, err = client.NewStorage(&client.StorageConfig{
 		InitialClients:         confClients,
 		DHCP:                   dhcpServer,
-		EtcHosts:               EtcHosts,
+		EtcHosts:               hosts,
 		ARPDB:                  arpDB,
 		ARPClientsUpdatePeriod: arpClientsUpdatePeriod,
 		RuntimeSourceDHCP:      config.Clients.Sources.DHCP,

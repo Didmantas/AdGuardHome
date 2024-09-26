@@ -17,8 +17,8 @@ import (
 	"github.com/AdguardTeam/golibs/log"
 )
 
-// Tags is the list of available client tags.
-var Tags = []string{
+// allowedTags is the list of available client tags.
+var allowedTags = []string{
 	"device_audio",
 	"device_camera",
 	"device_gameconsole",
@@ -144,7 +144,7 @@ type Storage struct {
 // NewStorage returns initialized client storage.  conf must not be nil.
 func NewStorage(conf *StorageConfig) (s *Storage, err error) {
 	s = &Storage{
-		allowedTags:            container.NewMapSet(Tags...),
+		allowedTags:            container.NewMapSet(allowedTags...),
 		mu:                     &sync.Mutex{},
 		index:                  newIndex(),
 		runtimeIndex:           newRuntimeIndex(),
@@ -574,4 +574,9 @@ func (s *Storage) RangeRuntime(f func(rc *Runtime) (cont bool)) {
 	defer s.mu.Unlock()
 
 	s.runtimeIndex.rangeClients(f)
+}
+
+// AllowedTags returns the list of available client tags.
+func (s *Storage) AllowedTags() (tags []string) {
+	return allowedTags
 }

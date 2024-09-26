@@ -460,6 +460,7 @@ func startDNSServer() error {
 
 	Context.filters.EnableFilters(false)
 
+	// TODO(s.chzhen):  Pass context.
 	err := Context.clients.Start(context.TODO())
 	if err != nil {
 		return fmt.Errorf("starting clients container: %w", err)
